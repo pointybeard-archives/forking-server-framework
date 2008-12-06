@@ -73,23 +73,27 @@
 	
 	Class Client{
 		
-		private static $_connection;
+		private $_connection;
 		
-		private function __construct(){
-			
+		public function connection(){
+			return $this->_connection;
 		}
 		
-		public static function connection(){
-			return self::$_connection;
+		public function __construct(&$connection){
+			$this->_connection = $connection;
 		}
 		
-		public static function read(){
+		public function __destruct(){
+			$this->close();
+		}
+		
+		public function read(){
 
 			$buffer = NULL;
 
 			## Start reading
 			do{
-				if(($tmp = socket_read(self::$_connection, BUFFER_SIZE, PHP_BINARY_READ)) === false) {
+				if(($tmp = socket_read($this->_connection, BUFFER_SIZE, PHP_BINARY_READ)) === false) {
 					display_message('Could not read from client: ' . socket_strerror(socket_last_error()), STDERR);
 					return false;
 				}
@@ -101,9 +105,9 @@
 			return $buffer;		
 		}
 
-		public static function write($response){
+		public function write($response){
 
-			if(socket_write(self::$_connection, $response) === false) {
+			if(socket_write($this->_connection, $response) === false) {
 				display_message('Could not write to client: ' . socket_strerror(socket_last_error()), STDERR);
 				return false;
 			}
@@ -112,8 +116,17 @@
 		}
 
 		public static function accept(){
-			if((self::$_connection = socket_accept(Server::socket())) === false) {
+			if(($connection = socket_accept(Server::socket())) === false) {
 				display_message('Could not accept connection: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+
+			return new self($connection);
+		}
+		
+		public function close(){
+			if(is_resource($this->_connection) && socket_close($this->_connection) === false) {
+				display_message('Could not close client connection: ' . socket_strerror(socket_last_error()), STDERR);
 				return false;
 			}
 
@@ -296,7 +309,7 @@
 			
 			## Accept the connection
 			//if(!accept_connection_request($conn, Server::socket())) {
-			if(!Client::accept()){
+			if(!$Client = Client::accept()){
 				$sighup = true;
 				continue;
 			}			
@@ -319,7 +332,10 @@
 			
 			## Parent thread, think for a bit, then wait for more connections
 			elseif($pid){
-				socket_close(Client::connection());
+				//socket_close(Client::connection());
+				$Client->close();
+				unset($Client);
+				
 				$children[] = $pid;
 				usleep(5000);				
 			}
@@ -332,7 +348,7 @@
 				while(true){
 				
 					## Read everything from the client
-					$buffer = Client::read();
+					$buffer = $Client->read();
 					if($buffer === false) break;
 					
 					parse_request($buffer);
@@ -347,7 +363,7 @@
 					
 					$xml->appendChild($response);
 					
-					Client::write($xml->saveXML());
+					$Client->write($xml->saveXML());
 					
 					unset($xml);
 					break;	
@@ -355,7 +371,10 @@
 				}
 				
 				## Finished with this connection
-				socket_close(Client::connection());
+				//socket_close(Client::connection());
+				$Client->close();
+				unset($Client);
+				
 				exit();
 				
 			}
