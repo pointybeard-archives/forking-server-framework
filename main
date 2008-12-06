@@ -114,9 +114,9 @@
 		return;
 	}
 	
-	function display_message($message, $stream=STDOUT){
-		fwrite($stream, date('G:i:s') . ' > ' . $message . CRLF);
-	}
+//	function display_message($message, $stream=STDOUT){
+//		fwrite($stream, date('G:i:s') . ' > ' . $message . CRLF);
+//	}
 	
 	function reap_zombies(&$status){
 		while(pcntl_wait($status, WNOHANG OR WUNTRACED) > 0) {
