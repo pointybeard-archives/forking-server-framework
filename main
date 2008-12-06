@@ -29,15 +29,68 @@
 		
 		exit();	 
 	}
+
+	function display_message($message, $stream=STDOUT){
+		fwrite($stream, date('G:i:s') . ' > ' . $message . CRLF);
+	}
+	
+	Class Server{
+		
+		//static private $_instance;
+		static private $_socket;
+		
+		/*public static function instance(){
+			if(!(self::$_instance instance of self)) 
+				self::$_instance = new self;
+			
+			return self::$_instance;
+		}*/
+		
+		public static function socket(){
+			return self::$_socket;
+		}
+		
+	//	private function __construct(){
+		public static function init(){
+			## Make sure the script doesn't get killed
+			ini_set('max_execution_time', '0');
+			ini_set('max_input_time', '0');
+			set_time_limit(0);			
+		}
+		
+		public function establish_listen_socket($port=9999){
+			if((self::$_socket = socket_create_listen($port, SOMAXCONN)) === false) {
+				display_message('Could not open socket: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+
+			return true;		
+		}
+
+		public function close_listen_socket(){
+			if(is_resource(self::$_socket) && socket_close(self::$_socket) === false) {
+				display_message('Could not close listen socket: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+
+			return true;
+		}		
+	}
+	
+	Class Client{
+		
+	}
 	
 	$argv = array_map('trim', $argv);
 	
 	$params = Util::process_argc_array($argv);
-
+	
+	
+	
 	## Make sure the script doesn't get killed
-	ini_set('max_execution_time', '0');
-	ini_set('max_input_time', '0');
-	set_time_limit(0);
+	//ini_set('max_execution_time', '0');
+	//ini_set('max_input_time', '0');
+	//set_time_limit(0);
 
 	define('MAX_CONNECTIONS', 30);
 	define('LISTEN_PORT', (is_numeric($params['listen']) ? $params['listen'] : 9999));
@@ -71,7 +124,7 @@
 		}	
 	}
 	
-	function establish_listen_socket(&$sock, $port=9999){
+	/*function establish_listen_socket(&$sock, $port=9999){
 		if(($sock = socket_create_listen($port, SOMAXCONN)) === false) {
 			display_message('Could not open socket: ' . socket_strerror(socket_last_error()), STDERR);
 			return false;
@@ -87,7 +140,7 @@
 		}
 	
 		return true;
-	}
+	}*/
 
 	function accept_connection_request(&$conn, $sock){
 		if(($conn = socket_accept($sock)) === false) {
@@ -155,7 +208,10 @@
 
 	$wnull = null;
 	$enull = null;
-
+	
+	//$Server = Server::instance();
+	Server::init();
+	
 	# Fork and exit (daemonize)
 	$pid = pcntl_fork();
 	
@@ -175,7 +231,7 @@
 	
 	while(!$sigterm){
 		
-		if(!establish_listen_socket($sock, LISTEN_PORT)) $sighup = true;
+		if(!Server::establish_listen_socket(LISTEN_PORT)) $sighup = true;
 
 		## Start the main program loop
 		while(!$sighup && !$sigterm){
@@ -192,13 +248,13 @@
 			}
 			
 			## Wait til someone tries to establish a connection
-			if(socket_select($rarray = array($sock), $wnull, $enull, 0, 0) <= 0) {
+			if(socket_select($rarray = array(Server::socket()), $wnull, $enull, 0, 0) <= 0) {
 				usleep(5000);
 				continue;
 			}			
 			
 			## Accept the connection
-			if(!accept_connection_request($conn, $sock)) {
+			if(!accept_connection_request($conn, Server::socket())) {
 				$sighup = true;
 				continue;
 			}			
@@ -228,7 +284,7 @@
 			
 			## New child thread
 			else{
-				socket_close($sock);
+				socket_close(Server::socket());
 				
 				## Wait for input
 				while(true){
@@ -263,7 +319,7 @@
 		}
 		
 		reap_zombies($status);
-		close_listen_socket($sock);
+		Server::close_listen_socket();
 	
 		$sighup = false;
 		$started = time();
