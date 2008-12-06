@@ -23,7 +23,7 @@
 			  CRLF .
 			
 			  CRLF . '  --listen <port>          port to listen to' .
-			  CRLF . '  --conf <path>            path to configuration xml file' .
+			  CRLF . '  --conf <path>            path to configuration xml file (optional)' .
 			
 			  CRLF . CRLF;
 		
@@ -35,30 +35,24 @@
 	}
 	
 	Class Server{
-		
-		//static private $_instance;
+
 		static private $_socket;
-		
-		/*public static function instance(){
-			if(!(self::$_instance instance of self)) 
-				self::$_instance = new self;
-			
-			return self::$_instance;
-		}*/
+		static private $_port;
 		
 		public static function socket(){
 			return self::$_socket;
 		}
-		
-	//	private function __construct(){
-		public static function init(){
+
+		public static function init($port=9999){
 			## Make sure the script doesn't get killed
 			ini_set('max_execution_time', '0');
 			ini_set('max_input_time', '0');
-			set_time_limit(0);			
+			set_time_limit(0);	
+			
+			self::$_port = $port;		
 		}
 		
-		public function establish_listen_socket($port=9999){
+		public static function listen(){
 			if((self::$_socket = socket_create_listen($port, SOMAXCONN)) === false) {
 				display_message('Could not open socket: ' . socket_strerror(socket_last_error()), STDERR);
 				return false;
@@ -67,7 +61,7 @@
 			return true;		
 		}
 
-		public function close_listen_socket(){
+		public static function close(){
 			if(is_resource(self::$_socket) && socket_close(self::$_socket) === false) {
 				display_message('Could not close listen socket: ' . socket_strerror(socket_last_error()), STDERR);
 				return false;
@@ -79,6 +73,53 @@
 	
 	Class Client{
 		
+		private static $_connection;
+		
+		private function __construct(){
+			
+		}
+		
+		public static function connection(){
+			return self::$_connection;
+		}
+		
+		public static function read(){
+
+			$buffer = NULL;
+
+			## Start reading
+			do{
+				if(($tmp = socket_read(self::$_connection, BUFFER_SIZE, PHP_BINARY_READ)) === false) {
+					display_message('Could not read from client: ' . socket_strerror(socket_last_error()), STDERR);
+					return false;
+				}
+
+				$buffer .= $tmp;
+
+			}while(strlen($tmp) == BUFFER_SIZE);
+
+			return $buffer;		
+		}
+
+		public static function write($response){
+
+			if(socket_write(self::$_connection, $response) === false) {
+				display_message('Could not write to client: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+
+			return true;
+		}
+
+		public static function accept(){
+			if((self::$_connection = socket_accept(Server::socket())) === false) {
+				display_message('Could not accept connection: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+
+			return true;
+		}
+				
 	}
 	
 	$argv = array_map('trim', $argv);
@@ -140,27 +181,6 @@
 		}
 	
 		return true;
-	}*/
-
-	function accept_connection_request(&$conn, $sock){
-		if(($conn = socket_accept($sock)) === false) {
-			display_message('Could not accept connection: ' . socket_strerror(socket_last_error()), STDERR);
-			return false;
-		}
-		
-		return true;
-	}
-	
-	function bury_dead_children(&$children){
-		while(list($key, $val) = each($children)) {
-			if(!posix_kill($val, 0)) {
-				unset($children[$key]);
-				$child = $child - 1;
-			}
-		}
-		
-		$children = array_values($children);
-		
 	}
 	
 	function read_from_client(&$buffer, $conn){
@@ -191,6 +211,27 @@
 		return true;
 	}
 	
+	function accept_connection_request(&$conn, $sock){
+		if(($conn = socket_accept($sock)) === false) {
+			display_message('Could not accept connection: ' . socket_strerror(socket_last_error()), STDERR);
+			return false;
+		}
+		
+		return true;
+	}*/
+	
+	function bury_dead_children(&$children){
+		while(list($key, $val) = each($children)) {
+			if(!posix_kill($val, 0)) {
+				unset($children[$key]);
+				$child = $child - 1;
+			}
+		}
+		
+		$children = array_values($children);	
+	}
+	
+
 	function parse_request($string){
 		
 		//$xml = new SimpleXMLElement($xmlstr);
@@ -231,7 +272,7 @@
 	
 	while(!$sigterm){
 		
-		if(!Server::establish_listen_socket(LISTEN_PORT)) $sighup = true;
+		if(!Server::listen(LISTEN_PORT)) $sighup = true;
 
 		## Start the main program loop
 		while(!$sighup && !$sigterm){
@@ -254,7 +295,8 @@
 			}			
 			
 			## Accept the connection
-			if(!accept_connection_request($conn, Server::socket())) {
+			//if(!accept_connection_request($conn, Server::socket())) {
+			if(!Client::accept()){
 				$sighup = true;
 				continue;
 			}			
@@ -277,7 +319,7 @@
 			
 			## Parent thread, think for a bit, then wait for more connections
 			elseif($pid){
-				socket_close($conn);
+				socket_close(Client::connection());
 				$children[] = $pid;
 				usleep(5000);				
 			}
@@ -290,7 +332,8 @@
 				while(true){
 				
 					## Read everything from the client
-					if(!read_from_client($buffer, $conn)) break;
+					$buffer = Client::read();
+					if($buffer === false) break;
 					
 					parse_request($buffer);
 					
@@ -304,7 +347,7 @@
 					
 					$xml->appendChild($response);
 					
-					write_to_client($xml->saveXML(), $conn);
+					Client::write($xml->saveXML());
 					
 					unset($xml);
 					break;	
@@ -312,14 +355,14 @@
 				}
 				
 				## Finished with this connection
-				socket_close($conn);
+				socket_close(Client::connection());
 				exit();
 				
 			}
 		}
 		
 		reap_zombies($status);
-		Server::close_listen_socket();
+		Server::close();
 	
 		$sighup = false;
 		$started = time();
