@@ -1,0 +1,274 @@
+#!/usr/bin/php
+<?php
+
+	## Simple Forking Server
+	## Version 1.0
+	
+	include_once('lib/class.xmldocument.php');
+	include_once('lib/class.util.php');
+	
+	define(CRLF, "\r\n");
+	
+	## Tidy up the argument array
+	array_shift($argv);
+
+	$argv = (empty($argv) ? NULL : array_values($argv));
+
+	## Show usage
+	if(@in_array('--help', $argv) || empty($argv)){
+		print CRLF . 'Simple Forking Server - Usage Guide' .
+			  CRLF . '====================================' .
+			  CRLF . 
+			  CRLF . 'Usage: php main --listen <port> [--conf <path>]' .
+			  CRLF .
+			
+			  CRLF . '  --listen <port>          port to listen to' .
+			  CRLF . '  --conf <path>            path to configuration xml file' .
+			
+			  CRLF . CRLF;
+		
+		exit();	 
+	}
+	
+	$argv = array_map('trim', $argv);
+	
+	$params = Util::process_argc_array($argv);
+
+	## Make sure the script doesn't get killed
+	ini_set('max_execution_time', '0');
+	ini_set('max_input_time', '0');
+	set_time_limit(0);
+
+	define('MAX_CONNECTIONS', 30);
+	define('LISTEN_PORT', (is_numeric($params['listen']) ? $params['listen'] : 9999));
+	define('CONFIG', ($params['config'] ? $params['config'] : 'config.xml'));
+	define('BUFFER_SIZE', 2048);
+		
+	$start = time();
+	
+	$sigterm = false;
+	$sighup = false;
+	
+	## Need a function to handle system signals
+	function sig_handler($signo) {
+		global $sigterm;
+		global $sighup;
+		
+		if($signo == SIGTERM) $sigterm = true;
+		elseif($signo == SIGHUP) $sighup = true;
+		else echo('Unknow signal' . CRLF);
+		
+		return;
+	}
+	
+	function display_message($message, $stream=STDOUT){
+		fwrite($stream, date('G:i:s') . ' > ' . $message . CRLF);
+	}
+	
+	function reap_zombies(&$status){
+		while(pcntl_wait($status, WNOHANG OR WUNTRACED) > 0) {
+		    usleep(5000);
+		}	
+	}
+	
+	function establish_listen_socket(&$sock, $port=9999){
+		if(($sock = socket_create_listen($port, SOMAXCONN)) === false) {
+			display_message('Could not open socket: ' . socket_strerror(socket_last_error()), STDERR);
+			return false;
+		}
+		
+		return true;		
+	}
+
+	function close_listen_socket(&$sock){
+		if(socket_close($sock) === false) {
+			display_message('Could not close listen socket: ' . socket_strerror(socket_last_error()), STDERR);
+			return false;
+		}
+	
+		return true;
+	}
+
+	function accept_connection_request(&$conn, $sock){
+		if(($conn = socket_accept($sock)) === false) {
+			display_message('Could not accept connection: ' . socket_strerror(socket_last_error()), STDERR);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	function bury_dead_children(&$children){
+		while(list($key, $val) = each($children)) {
+			if(!posix_kill($val, 0)) {
+				unset($children[$key]);
+				$child = $child - 1;
+			}
+		}
+		
+		$children = array_values($children);
+		
+	}
+	
+	function read_from_client(&$buffer, $conn){
+		
+		$buffer = NULL;
+		
+		## Start reading
+		do{
+			if(($tmp = socket_read($conn, BUFFER_SIZE, PHP_BINARY_READ)) === false) {
+				display_message('Could not read from client: ' . socket_strerror(socket_last_error()), STDERR);
+				return false;
+			}
+			
+			$buffer .= $tmp;
+			
+		}while(strlen($tmp) == BUFFER_SIZE);
+		
+		return true;		
+	}
+	
+	function write_to_client($response, $conn){
+		
+		if(socket_write($conn, $response) === false) {
+			display_message('Could not write to client: ' . socket_strerror(socket_last_error()), STDERR);
+			return false;
+		}
+		
+		return true;
+	}
+	
+	function parse_request($string){
+		
+		//$xml = new SimpleXMLElement($xmlstr);
+	}
+
+	pcntl_signal(SIGTERM, 'sig_handler');
+	pcntl_signal(SIGHUP, 'sig_handler');
+
+	$child_count = 0;
+	$max_children_seen = 0;
+	$total_children_seen = 0;
+		
+	$children = array();
+	$sock = $conn = NULL;
+
+	$wnull = null;
+	$enull = null;
+
+	# Fork and exit (daemonize)
+	$pid = pcntl_fork();
+	
+	## Forking failed
+	if($pid == -1){ 
+		display_message('Failed to fork daemon process. Server start up failed', STDERR);
+		exit();
+	}
+
+	## Server started, daemon created
+	elseif($pid){
+		display_message('Server started (' . $pid . ') on port ' . LISTEN_PORT . CRLF);
+		exit();
+	}
+	
+	$parentpid = posix_getpid();
+	
+	while(!$sigterm){
+		
+		if(!establish_listen_socket($sock, LISTEN_PORT)) $sighup = true;
+
+		## Start the main program loop
+		while(!$sighup && !$sigterm){
+
+			reap_zombies($status);
+			bury_dead_children($children);
+			$child_count = count($children);
+			
+			
+			## Wait if there are too many connections
+			if($child_count >= MAX_CONNECTIONS) {
+				usleep(5000);
+				continue;
+			}
+			
+			## Wait til someone tries to establish a connection
+			if(socket_select($rarray = array($sock), $wnull, $enull, 0, 0) <= 0) {
+				usleep(5000);
+				continue;
+			}			
+			
+			## Accept the connection
+			if(!accept_connection_request($conn, $sock)) {
+				$sighup = true;
+				continue;
+			}			
+		
+			## Keep track of how many children are around
+			$child_count++;
+			$total_requests_made++;
+			
+			## Keep track of the max connections at any given time
+			if($child_count > $max_simultaneous_requests) $max_simultaneous_requests = $child_count;
+			
+			## Fork a child process
+			$pid = pcntl_fork();
+			
+			## Problem forking a child
+			if($pid == -1){
+				display_message('Failed to fork child process. Exiting.', STDERR);
+				exit();
+			}
+			
+			## Parent thread, think for a bit, then wait for more connections
+			elseif($pid){
+				socket_close($conn);
+				$children[] = $pid;
+				usleep(5000);				
+			}
+			
+			## New child thread
+			else{
+				socket_close($sock);
+				
+				## Wait for input
+				while(true){
+				
+					## Read everything from the client
+					if(!read_from_client($buffer, $conn)) break;
+					
+					parse_request($buffer);
+					
+					//$response = new XMLElement('response');
+					//$response->setIncludeHeader(true);
+					$xml = new XMLDocument;
+					$xml->formatOutput = true;
+					$response = $xml->createElement('response');
+					
+					include('actions/action.serverinfo.php');
+					
+					$xml->appendChild($response);
+					
+					write_to_client($xml->saveXML(), $conn);
+					
+					unset($xml);
+					break;	
+					
+				}
+				
+				## Finished with this connection
+				socket_close($conn);
+				exit();
+				
+			}
+		}
+		
+		reap_zombies($status);
+		close_listen_socket($sock);
+	
+		$sighup = false;
+		$started = time();
+		
+	}
+	
+	display_message('Server on port '.LISTEN_PORT.' stopped (' . $pid . ') ' . CRLF);
+	exit(); 
