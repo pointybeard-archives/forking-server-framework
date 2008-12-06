@@ -1,0 +1,5 @@
+Forking Server Framework
+---
+
+Some serious bugs with SIGTERM and SIGHUP handling, resulting in difficulty shutting down parent thread. Use at your own risk!
+
